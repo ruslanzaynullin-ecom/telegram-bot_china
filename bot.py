@@ -125,6 +125,32 @@ def instagram_api(path: str, payload: dict):
         raise RuntimeError(f"Instagram API unavailable: {error}") from error
 
 
+def instagram_follows_business(user_id: str):
+    """Return whether this Direct participant follows our professional account.
+
+    The Instagram User Profile API only accepts the Instagram-scoped ID supplied
+    by a Direct webhook. It cannot be used to look up arbitrary usernames.
+    """
+    if not INSTAGRAM_ACCESS_TOKEN:
+        raise RuntimeError("Instagram API is not configured.")
+    query = urllib.parse.urlencode({"fields": "is_user_follow_business"})
+    request = urllib.request.Request(
+        f"{INSTAGRAM_API_ROOT}/{user_id}?{query}",
+        headers={"Authorization": f"Bearer {INSTAGRAM_ACCESS_TOKEN}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            profile = json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")
+        raise RuntimeError(f"Instagram profile lookup error {error.code}: {detail}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Instagram profile lookup unavailable: {error}") from error
+    result = profile.get("is_user_follow_business")
+    return result if isinstance(result, bool) else None
+
+
 def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
     message = {"text": text}
     if quick_replies:
@@ -196,6 +222,37 @@ def send_telegram_link(recipient_id: str):
     )
 
 
+def check_instagram_subscription(recipient_id: str):
+    """Release the Telegram link only after Meta confirms the follow status."""
+    try:
+        follows = instagram_follows_business(recipient_id)
+    except RuntimeError as error:
+        # A temporary API problem must never be presented as "you are not
+        # subscribed". The person can simply retry the check shortly.
+        print(f"Instagram follow check failed: {error}", file=sys.stderr)
+        send_instagram_text(
+            recipient_id,
+            "Не удалось проверить подписку прямо сейчас. Подождите минуту и нажмите «Готово, подписался» ещё раз.",
+        )
+        return instagram_confirmation_prompt(recipient_id)
+
+    if follows is True:
+        return send_telegram_link(recipient_id)
+
+    if follows is False:
+        message = "Пока не вижу подписку. Подпишитесь на аккаунт и попробуйте ещё раз через минуту."
+        if INSTAGRAM_PROFILE_URL:
+            message += f"\n\n{INSTAGRAM_PROFILE_URL}"
+        send_instagram_text(recipient_id, message)
+        return instagram_confirmation_prompt(recipient_id)
+
+    send_instagram_text(
+        recipient_id,
+        "Статус подписки пока не обновился. Подождите минуту и нажмите «Готово, подписался» ещё раз.",
+    )
+    return instagram_confirmation_prompt(recipient_id)
+
+
 def reply_to_instagram_comment(comment_id: str, text: str):
     return instagram_api(f"{comment_id}/replies", {"message": text})
 
@@ -234,7 +291,7 @@ def handle_instagram_message(event: dict):
         return
 
     if payload == "confirm_subscription" or text in {"подтверждаю", "confirm"}:
-        send_telegram_link(sender)
+        check_instagram_subscription(sender)
     elif text in INSTAGRAM_READY_WORDS:
         instagram_confirmation_prompt(sender)
     elif text in INSTAGRAM_KEYWORDS:
