@@ -231,10 +231,12 @@ def instagram_confirmation_prompt(recipient_id: str):
 
 
 def send_telegram_link(recipient_id: str):
-    return send_instagram_text(
+    result = send_instagram_text(
         recipient_id,
         f"Спасибо! Вот ссылка на Telegram-бота с гайдом:\n{TELEGRAM_BOT_LINK}",
     )
+    mark_instagram_user_complete(recipient_id)
+    return result
 
 
 def check_instagram_subscription(recipient_id: str):
@@ -313,6 +315,10 @@ def handle_instagram_message(event: dict):
     sender = (event.get("sender") or {}).get("id")
     if not sender:
         return
+    # Once the guide is delivered, this conversation belongs to the person
+    # managing the account. The automation must stay silent.
+    if instagram_user_is_complete(sender):
+        return
     message = event.get("message") or {}
     postback = event.get("postback") or {}
     text = (message.get("text") or "").strip().lower()
@@ -337,8 +343,11 @@ def handle_instagram_message(event: dict):
 def handle_instagram_comment(change: dict):
     value = change.get("value") or {}
     comment_id = str(value.get("id") or "")
+    commenter_id = str((value.get("from") or {}).get("id") or "")
     text = (value.get("text") or "").strip().lower()
     if not comment_id or not remember_event(comment_id):
+        return
+    if commenter_id and instagram_user_is_complete(commenter_id):
         return
     if not is_instagram_guide_request(text):
         return
@@ -492,8 +501,41 @@ def init_db():
             guide_sent_at TEXT
         )"""
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS completed_instagram_users (
+            user_id TEXT PRIMARY KEY,
+            completed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
     connection.commit()
     return connection
+
+
+def instagram_user_is_complete(user_id):
+    """Check completion in a short-lived connection safe for webhook threads."""
+    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM completed_instagram_users WHERE user_id = ?", (str(user_id),)
+        ).fetchone()
+        return row is not None
+    finally:
+        connection.close()
+
+
+def mark_instagram_user_complete(user_id):
+    """Persist the handoff from automation to manual conversation."""
+    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO completed_instagram_users (user_id) VALUES (?)",
+            (str(user_id),),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def save_user(connection, chat_id, source):
@@ -501,6 +543,13 @@ def save_user(connection, chat_id, source):
         "INSERT OR IGNORE INTO users (chat_id, source) VALUES (?, ?)", (chat_id, source or "direct")
     )
     connection.commit()
+
+
+def telegram_user_is_complete(connection, chat_id):
+    row = connection.execute(
+        "SELECT guide_sent_at FROM users WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def start_menu(chat_id):
@@ -584,6 +633,8 @@ def handle_update(connection, update):
     if message:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
+        if telegram_user_is_complete(connection, chat_id):
+            return
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             source = parts[1] if len(parts) == 2 else "direct"
@@ -600,6 +651,9 @@ def handle_update(connection, update):
 
     if callback and callback.get("data") in {"check_subscription", "get_guide"}:
         chat_id = callback["message"]["chat"]["id"]
+        if telegram_user_is_complete(connection, chat_id):
+            api("answerCallbackQuery", {"callback_query_id": callback["id"]})
+            return
         save_user(connection, chat_id, "direct")
         api("answerCallbackQuery", {"callback_query_id": callback["id"]})
         if not is_channel_member(chat_id):
