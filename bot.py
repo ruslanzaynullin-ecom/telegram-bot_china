@@ -130,7 +130,10 @@ def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
     if quick_replies:
         message["quick_replies"] = quick_replies
     return instagram_api(
-        f"{INSTAGRAM_ACCOUNT_ID}/messages",
+        # The token is issued to the Instagram professional account. Using
+        # `me` avoids an object-access error when Meta maps that account ID
+        # differently inside the Instagram Login flow.
+        "me/messages",
         {"recipient": {"id": str(recipient_id)}, "message": message},
     )
 
@@ -138,7 +141,7 @@ def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
 def send_instagram_button(recipient_id: str, text: str, button: dict):
     """Send a Meta button template; fallback is handled by the caller."""
     return instagram_api(
-        f"{INSTAGRAM_ACCOUNT_ID}/messages",
+        "me/messages",
         {
             "recipient": {"id": str(recipient_id)},
             "message": {
