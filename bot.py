@@ -50,7 +50,10 @@ WELCOME = (
     "Нажмите кнопку — и я пришлю видео и PDF-инструкцию."
 )
 
-INSTAGRAM_KEYWORDS = {"гайд", "guide", "start"}
+# Markers are deliberately broad: people often write a full request rather
+# than a single trigger word below a post or in Direct.
+INSTAGRAM_GUIDE_MARKERS = ("гайд", "guide", "инструкц", "как получить")
+INSTAGRAM_START_WORDS = {"start", "старт"}
 INSTAGRAM_READY_WORDS = {"готово", "готов", "ready"}
 RECENT_EVENT_IDS = set()
 RECENT_EVENT_LOCK = threading.Lock()
@@ -278,6 +281,14 @@ def remember_event(event_id: str) -> bool:
     return True
 
 
+def is_instagram_guide_request(text: str) -> bool:
+    """Recognize common Russian and English requests for the guide."""
+    normalized = " ".join(text.strip().lower().split())
+    return normalized in INSTAGRAM_START_WORDS or any(
+        marker in normalized for marker in INSTAGRAM_GUIDE_MARKERS
+    )
+
+
 def handle_instagram_message(event: dict):
     sender = (event.get("sender") or {}).get("id")
     if not sender:
@@ -294,7 +305,7 @@ def handle_instagram_message(event: dict):
         check_instagram_subscription(sender)
     elif text in INSTAGRAM_READY_WORDS:
         instagram_confirmation_prompt(sender)
-    elif text in INSTAGRAM_KEYWORDS:
+    elif is_instagram_guide_request(text):
         instagram_subscription_prompt(sender)
     else:
         send_instagram_text(
@@ -309,7 +320,7 @@ def handle_instagram_comment(change: dict):
     text = (value.get("text") or "").strip().lower()
     if not comment_id or not remember_event(comment_id):
         return
-    if text not in INSTAGRAM_KEYWORDS:
+    if not is_instagram_guide_request(text):
         return
 
     # A public reply makes the next action clear. Meta permits a single private
