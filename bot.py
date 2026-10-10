@@ -261,7 +261,19 @@ def reply_to_instagram_comment(comment_id: str, text: str):
 
 
 def private_reply_to_instagram_comment(comment_id: str, text: str):
-    return instagram_api(f"{comment_id}/private_replies", {"message": text})
+    """Start a permitted private reply from a public Instagram comment.
+
+    Instagram Login uses the Send API for this: the comment ID belongs in the
+    recipient object. The older ``/<comment-id>/private_replies`` edge is not
+    available to this type of Instagram access token.
+    """
+    return instagram_api(
+        "me/messages",
+        {
+            "recipient": {"comment_id": str(comment_id)},
+            "message": {"text": text},
+        },
+    )
 
 
 def remember_event(event_id: str) -> bool:
