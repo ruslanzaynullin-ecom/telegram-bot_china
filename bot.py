@@ -167,51 +167,63 @@ def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
     )
 
 
-def send_instagram_button(recipient_id: str, text: str, button: dict):
-    """Send a Meta button template; fallback is handled by the caller."""
+def send_instagram_buttons(recipient: dict, text: str, buttons: list[dict]):
+    """Send a Meta button template to a Direct user or comment author."""
     return instagram_api(
         "me/messages",
         {
-            "recipient": {"id": str(recipient_id)},
+            "recipient": recipient,
             "message": {
                 "attachment": {
                     "type": "template",
-                    "payload": {"template_type": "button", "text": text, "buttons": [button]},
+                    "payload": {"template_type": "button", "text": text, "buttons": buttons},
                 }
             },
         },
     )
 
 
+def subscription_buttons():
+    buttons = []
+    if INSTAGRAM_PROFILE_URL:
+        buttons.append(
+            {
+                "type": "web_url",
+                "url": INSTAGRAM_PROFILE_URL,
+                "title": "Подписаться",
+            }
+        )
+    buttons.append(
+        {
+            "type": "postback",
+            "title": "Проверить подписку",
+            "payload": "confirm_subscription",
+        }
+    )
+    return buttons
+
+
 def instagram_subscription_prompt(recipient_id: str):
     text = (
-        "Чтобы получить гайд, сначала подпишитесь на наш Instagram. "
-        "После подписки вернитесь сюда и напишите «готово»."
+        "Чтобы получить гайд, подпишитесь на наш Instagram. "
+        "Затем вернитесь сюда и нажмите «Проверить подписку»."
     )
-    if INSTAGRAM_PROFILE_URL:
-        try:
-            return send_instagram_button(
-                recipient_id,
-                text,
-                {
-                    "type": "web_url",
-                    "url": INSTAGRAM_PROFILE_URL,
-                    "title": "Подписаться на Instagram",
-                },
-            )
-        except RuntimeError as error:
-            print(f"Instagram button failed, using a link: {error}", file=sys.stderr)
+    try:
+        return send_instagram_buttons({"id": str(recipient_id)}, text, subscription_buttons())
+    except RuntimeError as error:
+        print(f"Instagram buttons failed, using a link: {error}", file=sys.stderr)
+        if INSTAGRAM_PROFILE_URL:
             text = f"{text}\n\n{INSTAGRAM_PROFILE_URL}"
-    return send_instagram_text(recipient_id, text)
+        return send_instagram_text(recipient_id, text)
 
 
 def instagram_confirmation_prompt(recipient_id: str):
-    text = "Если вы уже подписались, подтвердите это кнопкой ниже."
+    text = "Если вы уже подписались, нажмите кнопку ниже для проверки."
     try:
-        return send_instagram_button(
-            recipient_id,
+        return send_instagram_buttons(
+            {"id": str(recipient_id)},
             text,
-            {"type": "postback", "title": "Готово, подписался", "payload": "confirm_subscription"},
+            [{"type": "postback", "title": "Проверить подписку", "payload": "confirm_subscription"}],
         )
     except RuntimeError as error:
         print(f"Instagram confirmation button failed: {error}", file=sys.stderr)
@@ -267,12 +279,8 @@ def private_reply_to_instagram_comment(comment_id: str, text: str):
     recipient object. The older ``/<comment-id>/private_replies`` edge is not
     available to this type of Instagram access token.
     """
-    return instagram_api(
-        "me/messages",
-        {
-            "recipient": {"comment_id": str(comment_id)},
-            "message": {"text": text},
-        },
+    return send_instagram_buttons(
+        {"comment_id": str(comment_id)}, text, subscription_buttons()
     )
 
 
@@ -341,9 +349,7 @@ def handle_instagram_comment(change: dict):
     try:
         private_reply_to_instagram_comment(
             comment_id,
-            "Чтобы получить гайд, подпишитесь на наш Instagram. "
-            "После подписки вернитесь в Direct и напишите «готово»."
-            + (f"\n\n{INSTAGRAM_PROFILE_URL}" if INSTAGRAM_PROFILE_URL else ""),
+            "Чтобы получить гайд, подпишитесь на наш Instagram и затем нажмите «Проверить подписку».",
         )
     except RuntimeError as error:
         # Keep the public comment reply even if the private reply cannot be
