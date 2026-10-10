@@ -301,8 +301,53 @@ class MetaWebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def send_html(self, status: int, body: str):
+        """Serve the public policy pages required by Meta app settings."""
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/privacy":
+            self.send_html(
+                200,
+                """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Политика конфиденциальности — Guide Bot</title>
+<style>body{font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:760px;margin:48px auto;padding:0 24px;color:#1f2937}h1{line-height:1.2}a{color:#2563eb}</style>
+</head><body><h1>Политика конфиденциальности Guide Bot</h1>
+<p>Дата вступления в силу: 10 октября 2026 года.</p>
+<p>Guide Bot помогает пользователям получить материалы о Кантонской выставке через Instagram и Telegram.</p>
+<h2>Какие данные обрабатываются</h2>
+<p>Для ответа на сообщения и комментарии мы можем обрабатывать идентификатор пользователя Instagram, текст сообщения или комментария и технические данные, которые передаёт Meta. Для доставки материалов в Telegram бот сохраняет идентификатор Telegram-чата, источник перехода и время отправки гайда.</p>
+<h2>Зачем это нужно</h2>
+<p>Данные используются только для работы автоответчика, отправки запрошенной ссылки на Telegram-бота, защиты от повторной отправки и технической поддержки. Мы не продаём персональные данные и не используем их для рекламы третьих лиц.</p>
+<h2>Хранение и защита</h2>
+<p>Секреты доступа хранятся в защищённых переменных окружения. Доступ к данным ограничен владельцем сервиса и используется только для его работы.</p>
+<h2>Ваши права и удаление данных</h2>
+<p>Чтобы запросить сведения об обработке или удаление данных, напишите на <a href="mailto:turkey_original_brand@bk.ru?subject=Guide%20Bot%20%E2%80%94%20%D1%83%D0%B4%D0%B0%D0%BB%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D1%85">turkey_original_brand@bk.ru</a>. Укажите свой Instagram username или Telegram username, чтобы мы смогли найти запрос.</p>
+<p>Подробная инструкция: <a href="/data-deletion">удаление данных пользователя</a>.</p>
+</body></html>""",
+            )
+            return
+        if parsed.path == "/data-deletion":
+            self.send_html(
+                200,
+                """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Удаление данных — Guide Bot</title>
+<style>body{font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:760px;margin:48px auto;padding:0 24px;color:#1f2937}h1{line-height:1.2}a{color:#2563eb}</style>
+</head><body><h1>Удаление данных пользователя</h1>
+<p>Чтобы удалить данные, связанные с Guide Bot, отправьте письмо на <a href="mailto:turkey_original_brand@bk.ru?subject=Guide%20Bot%20%E2%80%94%20%D1%83%D0%B4%D0%B0%D0%BB%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D1%85">turkey_original_brand@bk.ru</a> с темой «Удаление данных Guide Bot».</p>
+<p>В письме укажите ваш Instagram username или Telegram username. Мы подтвердим получение запроса и удалим доступные данные, связанные с ним, в течение 30 дней, если их дальнейшее хранение не требуется по закону.</p>
+<p><a href="/privacy">Вернуться к политике конфиденциальности</a>.</p>
+</body></html>""",
+            )
+            return
         if parsed.path != "/instagram/webhook":
             self.send_plain(404, "Not found")
             return
