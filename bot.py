@@ -342,6 +342,10 @@ def handle_instagram_comment(change: dict):
     if not comment_id or not remember_event(comment_id):
         return
     if commenter_id and instagram_user_is_complete(commenter_id):
+        # Keep a polite public response on later comments, but do not restart
+        # the Direct automation or send the guide again. The account owner can
+        # continue the resulting Direct conversation manually.
+        reply_to_instagram_comment(comment_id, "Проверьте Direct ✉️")
         return
     if not is_instagram_guide_request(text):
         return
