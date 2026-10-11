@@ -52,7 +52,7 @@ WELCOME = (
 
 # Markers are deliberately broad: people often write a full request rather
 # than a single trigger word below a post or in Direct.
-INSTAGRAM_GUIDE_MARKERS = ("гайд", "guide", "инструкц", "как получить")
+INSTAGRAM_GUIDE_MARKERS = ("гайд", "гаид", "guide", "инструкц", "как получить")
 INSTAGRAM_START_WORDS = {"start", "старт"}
 RECENT_EVENT_IDS = set()
 RECENT_EVENT_LOCK = threading.Lock()
