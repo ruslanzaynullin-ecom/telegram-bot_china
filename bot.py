@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-VIDEO_PATH = Path(os.environ.get("GUIDE_VIDEO_PATH", "assets/guide-video.mov"))
+VIDEO_PATH = Path(os.environ.get("GUIDE_VIDEO_PATH", "assets/guide-video.mp4"))
 PDF_PATH = Path(os.environ.get("GUIDE_PDF_PATH", "assets/guide.pdf"))
 DATA_PATH = Path(os.environ.get("DATA_PATH", "data/bot.sqlite3"))
 API_ROOT = f"https://api.telegram.org/bot{TOKEN}"
@@ -54,7 +54,6 @@ WELCOME = (
 # than a single trigger word below a post or in Direct.
 INSTAGRAM_GUIDE_MARKERS = ("гайд", "guide", "инструкц", "как получить")
 INSTAGRAM_START_WORDS = {"start", "старт"}
-INSTAGRAM_READY_WORDS = {"готово", "готов", "ready"}
 RECENT_EVENT_IDS = set()
 RECENT_EVENT_LOCK = threading.Lock()
 
@@ -327,17 +326,12 @@ def handle_instagram_message(event: dict):
     if not remember_event(event_id):
         return
 
-    if payload == "confirm_subscription" or text in {"подтверждаю", "confirm"}:
+    if payload == "confirm_subscription":
         check_instagram_subscription(sender)
-    elif text in INSTAGRAM_READY_WORDS:
-        instagram_confirmation_prompt(sender)
     elif is_instagram_guide_request(text):
         instagram_subscription_prompt(sender)
-    else:
-        send_instagram_text(
-            sender,
-            "Напишите «гайд», чтобы получить инструкцию по Кантонской выставке.",
-        )
+    # Any other Direct message belongs to the account owner. Stay quiet so a
+    # normal manual conversation is never interrupted by the automation.
 
 
 def handle_instagram_comment(change: dict):
