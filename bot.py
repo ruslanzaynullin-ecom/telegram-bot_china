@@ -202,8 +202,12 @@ def account_for_webhook_entry(entry: dict):
     for account in configured_instagram_accounts():
         if account["id"] == entry_id:
             return account
+    # Never route an event with an explicit, unknown account ID to the main
+    # account: that would apply the wrong keyword and Telegram channel.
+    if entry_id:
+        return None
     # Some Meta test payloads omit entry.id. Preserve the existing single
-    # account behavior, but never guess when two accounts are configured.
+    # account behavior only for those payloads.
     accounts = configured_instagram_accounts()
     return accounts[0] if len(accounts) == 1 else None
 
@@ -871,9 +875,15 @@ def mark_instagram_user_complete(account_id, user_id):
 
 
 def save_user(connection, chat_id, source):
+    source = source or "direct"
     connection.execute(
-        "INSERT OR IGNORE INTO users (chat_id, source) VALUES (?, ?)", (chat_id, source or "direct")
+        "INSERT OR IGNORE INTO users (chat_id, source) VALUES (?, ?)", (chat_id, source)
     )
+    # A deep link is an explicit choice of campaign. It must override a
+    # previous generic start so MarketCar users are checked against its own
+    # Telegram group.
+    if source != "direct":
+        connection.execute("UPDATE users SET source = ? WHERE chat_id = ?", (source, chat_id))
     connection.commit()
 
 
