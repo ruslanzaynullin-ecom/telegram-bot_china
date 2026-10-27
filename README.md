@@ -42,6 +42,10 @@ Set these Railway service variables (do not commit their values):
 - `INSTAGRAM_APP_SECRET` — Instagram app secret from Meta.
 - `META_VERIFY_TOKEN` — a new random secret that you create; it must exactly match the token entered in Meta Webhooks.
 - `TELEGRAM_BOT_LINK` — optional; defaults to the current guide bot link.
+- `MARKETCAR_INSTAGRAM_USERNAME` — defaults to `marketcar.pro`; identifies the child Instagram account.
+- `MARKETCAR_TELEGRAM_BOT_LINK` — defaults to `https://t.me/cantonfair_china_bot?start=marketcar`.
+- `MARKETCAR_TELEGRAM_CHANNEL` — defaults to `@marketcar_pro` and is required only for people arriving from `marketcar.pro`.
+- `MARKETCAR_TELEGRAM_CHANNEL_LINK` — defaults to `https://t.me/marketcar_pro`.
 
 ### Connecting a second account through Instagram Business Login
 
@@ -69,4 +73,6 @@ Replace either file in `assets/` with the same filename and commit it to GitHub.
 
 ## Required Telegram channel
 
-The bot checks membership in `@r_zaynullin` before it sends the guide. Add the bot to that channel as an administrator; otherwise Telegram does not reliably allow it to check other users' membership. You can override the channel with the `REQUIRED_TELEGRAM_CHANNEL` and `REQUIRED_TELEGRAM_CHANNEL_LINK` Railway variables.
+The bot checks membership in `@r_zaynullin` before it sends the guide from the main Instagram account. Add the bot to that channel as an administrator; otherwise Telegram does not reliably allow it to check other users' membership. You can override the channel with the `REQUIRED_TELEGRAM_CHANNEL` and `REQUIRED_TELEGRAM_CHANNEL_LINK` Railway variables.
+
+For requests from `marketcar.pro`, the Instagram bot first checks the person follows `marketcar.pro`, then sends a Telegram link with the `marketcar` source. The Telegram bot requires subscription to `@marketcar_pro` before sending the guide. Add the same Telegram bot as an administrator of `@marketcar_pro` as well.

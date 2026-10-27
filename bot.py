@@ -61,6 +61,17 @@ REQUIRED_TELEGRAM_CHANNEL = os.environ.get("REQUIRED_TELEGRAM_CHANNEL", "@r_zayn
 REQUIRED_TELEGRAM_CHANNEL_LINK = os.environ.get(
     "REQUIRED_TELEGRAM_CHANNEL_LINK", "https://t.me/r_zaynullin"
 )
+# MarketCar uses the same Telegram bot, but a distinct deep-link source. This
+# makes its required channel independent from the guide flow for the main
+# Instagram account.
+MARKETCAR_INSTAGRAM_USERNAME = os.environ.get("MARKETCAR_INSTAGRAM_USERNAME", "marketcar.pro")
+MARKETCAR_TELEGRAM_BOT_LINK = os.environ.get(
+    "MARKETCAR_TELEGRAM_BOT_LINK", "https://t.me/cantonfair_china_bot?start=marketcar"
+)
+MARKETCAR_TELEGRAM_CHANNEL = os.environ.get("MARKETCAR_TELEGRAM_CHANNEL", "@marketcar_pro")
+MARKETCAR_TELEGRAM_CHANNEL_LINK = os.environ.get(
+    "MARKETCAR_TELEGRAM_CHANNEL_LINK", "https://t.me/marketcar_pro"
+)
 INSTAGRAM_API_ROOT = f"https://graph.instagram.com/{INSTAGRAM_API_VERSION}"
 
 WELCOME = (
@@ -162,16 +173,17 @@ def oauth_instagram_accounts():
     connection = sqlite3.connect(DATA_PATH)
     try:
         rows = connection.execute(
-            "SELECT account_id, access_token, profile_url FROM instagram_connected_accounts"
+            "SELECT account_id, access_token, username, profile_url FROM instagram_connected_accounts"
         ).fetchall()
         return [
             {
                 "label": "oauth",
                 "id": str(account_id),
                 "token": token,
+                "username": username or "",
                 "profile_url": profile_url or "",
             }
-            for account_id, token, profile_url in rows
+            for account_id, token, username, profile_url in rows
             if account_id and token
         ]
     except sqlite3.OperationalError:
@@ -323,13 +335,24 @@ def instagram_confirmation_prompt(account: dict, recipient_id: str):
 
 
 def send_telegram_link(account: dict, recipient_id: str):
+    telegram_link = telegram_bot_link_for_account(account)
     result = send_instagram_text(
         account,
         recipient_id,
-        f"Спасибо! Вот ссылка на Telegram-бота с гайдом:\n{TELEGRAM_BOT_LINK}",
+        f"Спасибо! Вот ссылка на Telegram-бота с гайдом:\n{telegram_link}",
     )
     mark_instagram_user_complete(account["id"], recipient_id)
     return result
+
+
+def telegram_bot_link_for_account(account: dict):
+    """Choose the Telegram deep link that matches the Instagram account."""
+    username = str(account.get("username") or "").lstrip("@").lower()
+    profile_url = str(account.get("profile_url") or "").lower()
+    marketcar = MARKETCAR_INSTAGRAM_USERNAME.lstrip("@").lower()
+    if username == marketcar or f"instagram.com/{marketcar}" in profile_url:
+        return MARKETCAR_TELEGRAM_BOT_LINK
+    return TELEGRAM_BOT_LINK
 
 
 def check_instagram_subscription(account: dict, recipient_id: str):
@@ -865,12 +888,22 @@ def start_menu(chat_id):
     )
 
 
-def is_channel_member(chat_id):
+def required_channel_for_source(source):
+    """Return the correct subscription channel for a Telegram deep-link source."""
+    if source == "marketcar":
+        return MARKETCAR_TELEGRAM_CHANNEL, MARKETCAR_TELEGRAM_CHANNEL_LINK
+    return REQUIRED_TELEGRAM_CHANNEL, REQUIRED_TELEGRAM_CHANNEL_LINK
+
+
+def required_channel_for_user(connection, chat_id):
+    row = connection.execute("SELECT source FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+    return required_channel_for_source(row[0] if row else "direct")
+
+
+def is_channel_member(chat_id, channel):
     """Check subscription. The bot must be an admin of the required channel."""
     try:
-        member = api(
-            "getChatMember", {"chat_id": REQUIRED_TELEGRAM_CHANNEL, "user_id": chat_id}
-        )
+        member = api("getChatMember", {"chat_id": channel, "user_id": chat_id})
     except RuntimeError as error:
         print(f"Subscription check failed: {error}", file=sys.stderr)
         return False
@@ -880,10 +913,10 @@ def is_channel_member(chat_id):
     )
 
 
-def subscription_prompt(chat_id):
+def subscription_prompt(chat_id, channel, channel_link):
     keyboard = {
         "inline_keyboard": [
-            [{"text": "Подписаться на канал", "url": REQUIRED_TELEGRAM_CHANNEL_LINK}],
+            [{"text": "Подписаться на канал", "url": channel_link}],
             [{"text": "Проверить подписку", "callback_data": "check_subscription"}],
         ]
     }
@@ -891,7 +924,7 @@ def subscription_prompt(chat_id):
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": f"Чтобы получить гайд, подпишитесь на канал {REQUIRED_TELEGRAM_CHANNEL}.",
+            "text": f"Чтобы получить гайд, подпишитесь на канал {channel}.",
             "reply_markup": keyboard,
         },
     )
@@ -939,10 +972,11 @@ def handle_update(connection, update):
             start_menu(chat_id)
         elif text.lower() in {"▶️ запустить", "запустить", "гайд", "получить гайд", "старт"}:
             save_user(connection, chat_id, "direct")
-            if is_channel_member(chat_id):
+            channel, channel_link = required_channel_for_user(connection, chat_id)
+            if is_channel_member(chat_id, channel):
                 send_welcome(chat_id)
             else:
-                subscription_prompt(chat_id)
+                subscription_prompt(chat_id, channel, channel_link)
         else:
             start_menu(chat_id)
 
@@ -953,8 +987,9 @@ def handle_update(connection, update):
             return
         save_user(connection, chat_id, "direct")
         api("answerCallbackQuery", {"callback_query_id": callback["id"]})
-        if not is_channel_member(chat_id):
-            subscription_prompt(chat_id)
+        channel, channel_link = required_channel_for_user(connection, chat_id)
+        if not is_channel_member(chat_id, channel):
+            subscription_prompt(chat_id, channel, channel_link)
         elif callback["data"] == "check_subscription":
             send_welcome(chat_id)
         else:
