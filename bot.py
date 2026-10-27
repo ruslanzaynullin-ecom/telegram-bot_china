@@ -274,10 +274,10 @@ def send_instagram_text(account: dict, recipient_id: str, text: str, quick_repli
         message["quick_replies"] = quick_replies
     return instagram_api(
         account,
-        # The token is issued to the Instagram professional account. Using
-        # `me` avoids an object-access error when Meta maps that account ID
-        # differently inside the Instagram Login flow.
-        "me/messages",
+        # Instagram Login sends replies through the receiving professional
+        # account's explicit ID.  Using `me` works for some legacy tokens but
+        # fails for new message requests with an OAuth-connected account.
+        f"{account['id']}/messages",
         {"recipient": {"id": str(recipient_id)}, "message": message},
     )
 
@@ -286,7 +286,7 @@ def send_instagram_buttons(account: dict, recipient: dict, text: str, buttons: l
     """Send a Meta button template to a Direct user or comment author."""
     return instagram_api(
         account,
-        "me/messages",
+        f"{account['id']}/messages",
         {
             "recipient": recipient,
             "message": {
