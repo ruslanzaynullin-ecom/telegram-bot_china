@@ -6,6 +6,7 @@ variables; never paste it into this file.
 """
 
 import json
+import html
 import hashlib
 import hmac
 import os
@@ -31,8 +32,27 @@ API_ROOT = f"https://api.telegram.org/bot{TOKEN}"
 INSTAGRAM_ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
 INSTAGRAM_ACCOUNT_ID = os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
 INSTAGRAM_PROFILE_URL = os.environ.get("INSTAGRAM_PROFILE_URL", "")
+# Optional second professional account. It uses the same Meta app, webhook,
+# Telegram bot and guide files as the primary account.
+INSTAGRAM_2_ACCESS_TOKEN = os.environ.get("INSTAGRAM_2_ACCESS_TOKEN", "")
+INSTAGRAM_2_ACCOUNT_ID = os.environ.get("INSTAGRAM_2_ACCOUNT_ID", "")
+INSTAGRAM_2_PROFILE_URL = os.environ.get("INSTAGRAM_2_PROFILE_URL", "")
 INSTAGRAM_APP_SECRET = os.environ.get("INSTAGRAM_APP_SECRET", "")
 META_VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "")
+# Instagram Business Login is used to connect an additional professional
+# account without pasting its token into Railway by hand. The client secret
+# intentionally falls back to the existing Instagram app secret.
+PUBLIC_BASE_URL = os.environ.get(
+    "PUBLIC_BASE_URL", "https://zippy-flow-production.up.railway.app"
+).rstrip("/")
+INSTAGRAM_OAUTH_CLIENT_ID = os.environ.get("INSTAGRAM_OAUTH_CLIENT_ID", "")
+INSTAGRAM_OAUTH_CLIENT_SECRET = os.environ.get(
+    "INSTAGRAM_OAUTH_CLIENT_SECRET", INSTAGRAM_APP_SECRET
+)
+INSTAGRAM_OAUTH_REDIRECT_URI = os.environ.get(
+    "INSTAGRAM_OAUTH_REDIRECT_URI",
+    f"{PUBLIC_BASE_URL}/instagram/oauth/callback",
+)
 INSTAGRAM_API_VERSION = os.environ.get("INSTAGRAM_API_VERSION", "v24.0")
 TELEGRAM_BOT_LINK = os.environ.get(
     "TELEGRAM_BOT_LINK", "https://t.me/cantonfair_china_bot?start=instagram"
@@ -104,15 +124,85 @@ def api(method: str, payload=None, files=None):
     return result["result"]
 
 
-def instagram_api(path: str, payload: dict):
+def configured_instagram_accounts():
+    """Return every fully configured Instagram account.
+
+    The original variables continue to represent the main account. The optional
+    ``INSTAGRAM_2_*`` variables add the child account without changing the
+    already working setup.
+    """
+    accounts = []
+    for label, account_id, token, profile_url in (
+        ("main", INSTAGRAM_ACCOUNT_ID, INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_PROFILE_URL),
+        ("second", INSTAGRAM_2_ACCOUNT_ID, INSTAGRAM_2_ACCESS_TOKEN, INSTAGRAM_2_PROFILE_URL),
+    ):
+        if account_id and token:
+            accounts.append(
+                {
+                    "label": label,
+                    "id": str(account_id),
+                    "token": token,
+                    "profile_url": profile_url,
+                }
+            )
+    # Accounts connected through Instagram Business Login live in the local
+    # database, so their access token is never exposed in a public URL or
+    # committed to GitHub.
+    known_ids = {account["id"] for account in accounts}
+    for account in oauth_instagram_accounts():
+        if account["id"] not in known_ids:
+            accounts.append(account)
+    return accounts
+
+
+def oauth_instagram_accounts():
+    """Load professional accounts connected through Instagram Business Login."""
+    if not DATA_PATH.is_file():
+        return []
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT account_id, access_token, profile_url FROM instagram_connected_accounts"
+        ).fetchall()
+        return [
+            {
+                "label": "oauth",
+                "id": str(account_id),
+                "token": token,
+                "profile_url": profile_url or "",
+            }
+            for account_id, token, profile_url in rows
+            if account_id and token
+        ]
+    except sqlite3.OperationalError:
+        # The server can receive an early Meta health check during its first
+        # startup, before the database schema has been created.
+        return []
+    finally:
+        connection.close()
+
+
+def account_for_webhook_entry(entry: dict):
+    """Find the professional account that received a webhook event."""
+    entry_id = str(entry.get("id") or "")
+    for account in configured_instagram_accounts():
+        if account["id"] == entry_id:
+            return account
+    # Some Meta test payloads omit entry.id. Preserve the existing single
+    # account behavior, but never guess when two accounts are configured.
+    accounts = configured_instagram_accounts()
+    return accounts[0] if len(accounts) == 1 else None
+
+
+def instagram_api(account: dict, path: str, payload: dict):
     """Call the Instagram API without ever logging its access token."""
-    if not INSTAGRAM_ACCESS_TOKEN or not INSTAGRAM_ACCOUNT_ID:
+    if not account:
         raise RuntimeError("Instagram API is not configured.")
     request = urllib.request.Request(
         f"{INSTAGRAM_API_ROOT}/{path.lstrip('/')}",
         data=json.dumps(payload).encode(),
         headers={
-            "Authorization": f"Bearer {INSTAGRAM_ACCESS_TOKEN}",
+            "Authorization": f"Bearer {account['token']}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -127,18 +217,18 @@ def instagram_api(path: str, payload: dict):
         raise RuntimeError(f"Instagram API unavailable: {error}") from error
 
 
-def instagram_follows_business(user_id: str):
+def instagram_follows_business(account: dict, user_id: str):
     """Return whether this Direct participant follows our professional account.
 
     The Instagram User Profile API only accepts the Instagram-scoped ID supplied
     by a Direct webhook. It cannot be used to look up arbitrary usernames.
     """
-    if not INSTAGRAM_ACCESS_TOKEN:
+    if not account:
         raise RuntimeError("Instagram API is not configured.")
     query = urllib.parse.urlencode({"fields": "is_user_follow_business"})
     request = urllib.request.Request(
         f"{INSTAGRAM_API_ROOT}/{user_id}?{query}",
-        headers={"Authorization": f"Bearer {INSTAGRAM_ACCESS_TOKEN}"},
+        headers={"Authorization": f"Bearer {account['token']}"},
         method="GET",
     )
     try:
@@ -153,11 +243,12 @@ def instagram_follows_business(user_id: str):
     return result if isinstance(result, bool) else None
 
 
-def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
+def send_instagram_text(account: dict, recipient_id: str, text: str, quick_replies=None):
     message = {"text": text}
     if quick_replies:
         message["quick_replies"] = quick_replies
     return instagram_api(
+        account,
         # The token is issued to the Instagram professional account. Using
         # `me` avoids an object-access error when Meta maps that account ID
         # differently inside the Instagram Login flow.
@@ -166,9 +257,10 @@ def send_instagram_text(recipient_id: str, text: str, quick_replies=None):
     )
 
 
-def send_instagram_buttons(recipient: dict, text: str, buttons: list[dict]):
+def send_instagram_buttons(account: dict, recipient: dict, text: str, buttons: list[dict]):
     """Send a Meta button template to a Direct user or comment author."""
     return instagram_api(
+        account,
         "me/messages",
         {
             "recipient": recipient,
@@ -182,13 +274,13 @@ def send_instagram_buttons(recipient: dict, text: str, buttons: list[dict]):
     )
 
 
-def subscription_buttons():
+def subscription_buttons(account: dict):
     buttons = []
-    if INSTAGRAM_PROFILE_URL:
+    if account["profile_url"]:
         buttons.append(
             {
                 "type": "web_url",
-                "url": INSTAGRAM_PROFILE_URL,
+                "url": account["profile_url"],
                 "title": "Подписаться",
             }
         )
@@ -202,78 +294,82 @@ def subscription_buttons():
     return buttons
 
 
-def instagram_subscription_prompt(recipient_id: str):
+def instagram_subscription_prompt(account: dict, recipient_id: str):
     text = (
         "Чтобы получить гайд, подпишитесь на наш Instagram. "
         "Затем вернитесь сюда и нажмите «Проверить подписку»."
     )
     try:
-        return send_instagram_buttons({"id": str(recipient_id)}, text, subscription_buttons())
+        return send_instagram_buttons(account, {"id": str(recipient_id)}, text, subscription_buttons(account))
     except RuntimeError as error:
         print(f"Instagram buttons failed, using a link: {error}", file=sys.stderr)
-        if INSTAGRAM_PROFILE_URL:
-            text = f"{text}\n\n{INSTAGRAM_PROFILE_URL}"
-        return send_instagram_text(recipient_id, text)
+        if account["profile_url"]:
+            text = f"{text}\n\n{account['profile_url']}"
+        return send_instagram_text(account, recipient_id, text)
 
 
-def instagram_confirmation_prompt(recipient_id: str):
+def instagram_confirmation_prompt(account: dict, recipient_id: str):
     text = "Если вы уже подписались, нажмите кнопку ниже для проверки."
     try:
         return send_instagram_buttons(
+            account,
             {"id": str(recipient_id)},
             text,
             [{"type": "postback", "title": "Проверить подписку", "payload": "confirm_subscription"}],
         )
     except RuntimeError as error:
         print(f"Instagram confirmation button failed: {error}", file=sys.stderr)
-        return send_instagram_text(recipient_id, "Напишите «подтверждаю», чтобы получить ссылку.")
+        return send_instagram_text(account, recipient_id, "Напишите «подтверждаю», чтобы получить ссылку.")
 
 
-def send_telegram_link(recipient_id: str):
+def send_telegram_link(account: dict, recipient_id: str):
     result = send_instagram_text(
+        account,
         recipient_id,
         f"Спасибо! Вот ссылка на Telegram-бота с гайдом:\n{TELEGRAM_BOT_LINK}",
     )
-    mark_instagram_user_complete(recipient_id)
+    mark_instagram_user_complete(account["id"], recipient_id)
     return result
 
 
-def check_instagram_subscription(recipient_id: str):
+def check_instagram_subscription(account: dict, recipient_id: str):
     """Release the Telegram link only after Meta confirms the follow status."""
     try:
-        follows = instagram_follows_business(recipient_id)
+        follows = instagram_follows_business(account, recipient_id)
     except RuntimeError as error:
         # A temporary API problem must never be presented as "you are not
         # subscribed". The person can simply retry the check shortly.
         print(f"Instagram follow check failed: {error}", file=sys.stderr)
         send_instagram_text(
+            account,
             recipient_id,
             "Не удалось проверить подписку прямо сейчас. Подождите минуту и нажмите «Готово, подписался» ещё раз.",
         )
-        return instagram_confirmation_prompt(recipient_id)
+        return instagram_confirmation_prompt(account, recipient_id)
 
     if follows is True:
-        return send_telegram_link(recipient_id)
+        return send_telegram_link(account, recipient_id)
 
     if follows is False:
         message = "Пока не вижу подписку. Подпишитесь на аккаунт и попробуйте ещё раз через минуту."
-        if INSTAGRAM_PROFILE_URL:
-            message += f"\n\n{INSTAGRAM_PROFILE_URL}"
-        send_instagram_text(recipient_id, message)
-        return instagram_confirmation_prompt(recipient_id)
+        if account["profile_url"]:
+            message += f"\n\n{account['profile_url']}"
+        send_instagram_text(account, recipient_id, message)
+        return instagram_confirmation_prompt(account, recipient_id)
 
     send_instagram_text(
+        account,
         recipient_id,
         "Статус подписки пока не обновился. Подождите минуту и нажмите «Готово, подписался» ещё раз.",
     )
-    return instagram_confirmation_prompt(recipient_id)
+    return instagram_confirmation_prompt(account, recipient_id)
 
 
-def reply_to_instagram_comment(comment_id: str, text: str):
-    return instagram_api(f"{comment_id}/replies", {"message": text})
+def reply_to_instagram_comment(account: dict, comment_id: str, text: str):
+    return instagram_api(account, f"{comment_id}/replies", {"message": text})
 
 
-def private_reply_to_instagram_comment(comment_id: str, text: str):
+def private_reply_to_instagram_comment(account: dict, comment_id: str, text: str):
     """Start a permitted private reply from a public Instagram comment.
 
     Instagram Login uses the Send API for this: the comment ID belongs in the
@@ -281,7 +377,7 @@ def private_reply_to_instagram_comment(comment_id: str, text: str):
     available to this type of Instagram access token.
     """
     return send_instagram_buttons(
-        {"comment_id": str(comment_id)}, text, subscription_buttons()
+        account, {"comment_id": str(comment_id)}, text, subscription_buttons(account)
     )
 
 
@@ -310,13 +406,13 @@ def is_instagram_guide_request(text: str) -> bool:
     )
 
 
-def handle_instagram_message(event: dict):
+def handle_instagram_message(account: dict, event: dict):
     sender = (event.get("sender") or {}).get("id")
     if not sender:
         return
     # Once the guide is delivered, this conversation belongs to the person
     # managing the account. The automation must stay silent.
-    if instagram_user_is_complete(sender):
+    if instagram_user_is_complete(account["id"], sender):
         return
     message = event.get("message") or {}
     postback = event.get("postback") or {}
@@ -327,34 +423,35 @@ def handle_instagram_message(event: dict):
         return
 
     if payload == "confirm_subscription":
-        check_instagram_subscription(sender)
+        check_instagram_subscription(account, sender)
     elif is_instagram_guide_request(text):
-        instagram_subscription_prompt(sender)
+        instagram_subscription_prompt(account, sender)
     # Any other Direct message belongs to the account owner. Stay quiet so a
     # normal manual conversation is never interrupted by the automation.
 
 
-def handle_instagram_comment(change: dict):
+def handle_instagram_comment(account: dict, change: dict):
     value = change.get("value") or {}
     comment_id = str(value.get("id") or "")
     commenter_id = str((value.get("from") or {}).get("id") or "")
     text = (value.get("text") or "").strip().lower()
     if not comment_id or not remember_event(comment_id):
         return
-    if commenter_id and instagram_user_is_complete(commenter_id):
+    if commenter_id and instagram_user_is_complete(account["id"], commenter_id):
         # Keep a polite public response on later comments, but do not restart
         # the Direct automation or send the guide again. The account owner can
         # continue the resulting Direct conversation manually.
-        reply_to_instagram_comment(comment_id, "Проверьте Direct ✉️")
+        reply_to_instagram_comment(account, comment_id, "Проверьте Direct ✉️")
         return
     if not is_instagram_guide_request(text):
         return
 
     # A public reply makes the next action clear. Meta permits a single private
     # reply to an eligible comment, which starts the Direct conversation.
-    reply_to_instagram_comment(comment_id, "Проверьте Direct ✉️")
+    reply_to_instagram_comment(account, comment_id, "Проверьте Direct ✉️")
     try:
         private_reply_to_instagram_comment(
+            account,
             comment_id,
             "Чтобы получить гайд, подпишитесь на наш Instagram и затем нажмите «Проверить подписку».",
         )
@@ -366,18 +463,144 @@ def handle_instagram_comment(change: dict):
 
 def process_instagram_webhook(payload: dict):
     for entry in payload.get("entry", []):
+        account = account_for_webhook_entry(entry)
+        if not account:
+            print("Instagram webhook ignored: account is not configured.", file=sys.stderr)
+            continue
         for message in entry.get("messaging", []):
             try:
-                handle_instagram_message(message)
+                handle_instagram_message(account, message)
             except Exception as error:
                 print(f"Instagram message handling error: {error}", file=sys.stderr)
         for change in entry.get("changes", []):
             if change.get("field") != "comments":
                 continue
             try:
-                handle_instagram_comment(change)
+                handle_instagram_comment(account, change)
             except Exception as error:
                 print(f"Instagram comment handling error: {error}", file=sys.stderr)
+
+
+def oauth_connect_url(state: str):
+    """Build the Instagram Business Login URL for an account owner."""
+    query = urllib.parse.urlencode(
+        {
+            "client_id": INSTAGRAM_OAUTH_CLIENT_ID,
+            "redirect_uri": INSTAGRAM_OAUTH_REDIRECT_URI,
+            "response_type": "code",
+            "scope": (
+                "instagram_business_basic,instagram_business_manage_messages,"
+                "instagram_business_manage_comments"
+            ),
+            "state": state,
+        }
+    )
+    return f"https://www.instagram.com/oauth/authorize?{query}"
+
+
+def create_oauth_state():
+    """Create a short-lived one-use value protecting the OAuth callback."""
+    state = uuid.uuid4().hex
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        cutoff = time.time() - 15 * 60
+        connection.execute("DELETE FROM instagram_oauth_states WHERE created_at < ?", (cutoff,))
+        connection.execute(
+            "INSERT INTO instagram_oauth_states (state, created_at) VALUES (?, ?)",
+            (state, time.time()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return state
+
+
+def consume_oauth_state(state: str) -> bool:
+    """Validate and delete a one-use OAuth state value."""
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        row = connection.execute(
+            "SELECT created_at FROM instagram_oauth_states WHERE state = ?", (state,)
+        ).fetchone()
+        connection.execute("DELETE FROM instagram_oauth_states WHERE state = ?", (state,))
+        connection.commit()
+        return bool(row and float(row[0]) >= time.time() - 15 * 60)
+    finally:
+        connection.close()
+
+
+def oauth_request_json(url: str, form: dict | None = None):
+    """Call the Instagram OAuth API without logging authorization codes or tokens."""
+    if form is None:
+        request = urllib.request.Request(url, method="GET")
+    else:
+        request = urllib.request.Request(
+            url,
+            data=urllib.parse.urlencode(form).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as error:
+        # OAuth providers sometimes return descriptive payloads. Do not put
+        # them in logs: an authorization code may be included in a URL.
+        raise RuntimeError(f"Instagram authorization failed (HTTP {error.code}).") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError("Instagram authorization service is unavailable.") from error
+
+
+def connect_instagram_account(code: str):
+    """Exchange an OAuth code and securely save the connected account."""
+    if not (INSTAGRAM_OAUTH_CLIENT_ID and INSTAGRAM_OAUTH_CLIENT_SECRET):
+        raise RuntimeError("Instagram Business Login is not configured on the server.")
+    short_lived = oauth_request_json(
+        "https://api.instagram.com/oauth/access_token",
+        {
+            "client_id": INSTAGRAM_OAUTH_CLIENT_ID,
+            "client_secret": INSTAGRAM_OAUTH_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "redirect_uri": INSTAGRAM_OAUTH_REDIRECT_URI,
+            "code": code,
+        },
+    )
+    short_token = short_lived.get("access_token")
+    if not short_token:
+        raise RuntimeError("Instagram did not return an access token.")
+    query = urllib.parse.urlencode(
+        {
+            "grant_type": "ig_exchange_token",
+            "client_secret": INSTAGRAM_OAUTH_CLIENT_SECRET,
+            "access_token": short_token,
+        }
+    )
+    long_lived = oauth_request_json(f"https://graph.instagram.com/access_token?{query}")
+    access_token = long_lived.get("access_token") or short_token
+    profile_query = urllib.parse.urlencode({"fields": "user_id,username", "access_token": access_token})
+    profile = oauth_request_json(f"{INSTAGRAM_API_ROOT}/me?{profile_query}")
+    account_id = str(profile.get("user_id") or short_lived.get("user_id") or "")
+    username = str(profile.get("username") or "")
+    if not account_id:
+        raise RuntimeError("Instagram did not return the professional account ID.")
+    profile_url = f"https://www.instagram.com/{username}/" if username else ""
+    connection = sqlite3.connect(DATA_PATH)
+    try:
+        connection.execute(
+            """INSERT INTO instagram_connected_accounts
+            (account_id, access_token, username, profile_url, connected_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(account_id) DO UPDATE SET
+                access_token = excluded.access_token,
+                username = excluded.username,
+                profile_url = excluded.profile_url,
+                connected_at = CURRENT_TIMESTAMP""",
+            (account_id, access_token, username, profile_url),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return username or account_id
 
 
 class MetaWebhookHandler(BaseHTTPRequestHandler):
@@ -408,6 +631,50 @@ class MetaWebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/instagram/connect":
+            if not (INSTAGRAM_OAUTH_CLIENT_ID and INSTAGRAM_OAUTH_CLIENT_SECRET):
+                self.send_plain(503, "Instagram Business Login is not configured yet.")
+                return
+            state = create_oauth_state()
+            self.send_response(302)
+            self.send_header("Location", oauth_connect_url(state))
+            self.end_headers()
+            return
+        if parsed.path == "/instagram/oauth/callback":
+            query = urllib.parse.parse_qs(parsed.query)
+            state = query.get("state", [""])[0]
+            error = query.get("error", [""])[0]
+            code = query.get("code", [""])[0]
+            if error:
+                self.send_html(
+                    400,
+                    "<!doctype html><meta charset=\"utf-8\"><title>Подключение не завершено</title>"
+                    "<p>Подключение Instagram отменено или не было разрешено. Закройте эту страницу и попробуйте ещё раз.</p>",
+                )
+                return
+            if not state or not code or not consume_oauth_state(state):
+                self.send_html(
+                    400,
+                    "<!doctype html><meta charset=\"utf-8\"><title>Ссылка устарела</title>"
+                    "<p>Ссылка для подключения устарела. Закройте эту страницу и начните подключение заново.</p>",
+                )
+                return
+            try:
+                account_name = connect_instagram_account(code)
+            except RuntimeError as error:
+                print(f"Instagram Business Login failed: {error}", file=sys.stderr)
+                self.send_html(
+                    502,
+                    "<!doctype html><meta charset=\"utf-8\"><title>Не удалось подключить</title>"
+                    "<p>Не удалось завершить подключение Instagram. Вернитесь в Meta и попробуйте ещё раз.</p>",
+                )
+                return
+            self.send_html(
+                200,
+                "<!doctype html><meta charset=\"utf-8\"><title>Instagram подключён</title>"
+                f"<p>Аккаунт <strong>{html.escape(account_name)}</strong> подключён. Эту страницу можно закрыть.</p>",
+            )
+            return
         if parsed.path == "/privacy":
             self.send_html(
                 200,
@@ -505,31 +772,63 @@ def init_db():
             completed_at TEXT DEFAULT CURRENT_TIMESTAMP
         )"""
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS completed_instagram_users_by_account (
+            account_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            completed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (account_id, user_id)
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS instagram_oauth_states (
+            state TEXT PRIMARY KEY,
+            created_at REAL NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS instagram_connected_accounts (
+            account_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            username TEXT,
+            profile_url TEXT,
+            connected_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
     connection.commit()
     return connection
 
 
-def instagram_user_is_complete(user_id):
+def instagram_user_is_complete(account_id, user_id):
     """Check completion in a short-lived connection safe for webhook threads."""
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATA_PATH)
     try:
         row = connection.execute(
-            "SELECT 1 FROM completed_instagram_users WHERE user_id = ?", (str(user_id),)
+            "SELECT 1 FROM completed_instagram_users_by_account "
+            "WHERE account_id = ? AND user_id = ?",
+            (str(account_id), str(user_id)),
         ).fetchone()
+        # Preserve the completed state created by the first version of the
+        # bot for the main account.
+        if row is None and str(account_id) == str(INSTAGRAM_ACCOUNT_ID):
+            row = connection.execute(
+                "SELECT 1 FROM completed_instagram_users WHERE user_id = ?", (str(user_id),)
+            ).fetchone()
         return row is not None
     finally:
         connection.close()
 
 
-def mark_instagram_user_complete(user_id):
+def mark_instagram_user_complete(account_id, user_id):
     """Persist the handoff from automation to manual conversation."""
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATA_PATH)
     try:
         connection.execute(
-            "INSERT OR IGNORE INTO completed_instagram_users (user_id) VALUES (?)",
-            (str(user_id),),
+            "INSERT OR IGNORE INTO completed_instagram_users_by_account "
+            "(account_id, user_id) VALUES (?, ?)",
+            (str(account_id), str(user_id)),
         )
         connection.commit()
     finally:
@@ -665,12 +964,12 @@ def handle_update(connection, update):
 def main():
     if not TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN before starting the bot.")
+    connection = init_db()
     start_webhook_server()
-    if not (INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_ACCOUNT_ID):
+    if not configured_instagram_accounts():
         print("Instagram replies are disabled until Instagram variables are configured.")
     if not (INSTAGRAM_APP_SECRET and META_VERIFY_TOKEN):
         print("Meta webhook verification is disabled until its secrets are configured.")
-    connection = init_db()
     offset = None
     print("Bot is running. Press Ctrl+C to stop.")
     while True:
