@@ -202,6 +202,13 @@ def account_for_webhook_entry(entry: dict):
     for account in configured_instagram_accounts():
         if account["id"] == entry_id:
             return account
+    # Instagram Business Login can use a different technical ID in webhook
+    # envelopes than the profile ID returned during OAuth.  The main account
+    # still matches its configured ID above; if exactly one additional OAuth
+    # account exists, route an otherwise unknown event to that account.
+    oauth_accounts = oauth_instagram_accounts()
+    if entry_id and len(oauth_accounts) == 1:
+        return oauth_accounts[0]
     # Never route an event with an explicit, unknown account ID to the main
     # account: that would apply the wrong keyword and Telegram channel.
     if entry_id:
