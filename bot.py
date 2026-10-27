@@ -85,6 +85,9 @@ WELCOME = (
 # than a single trigger word below a post or in Direct.
 INSTAGRAM_GUIDE_MARKERS = ("гайд", "гаид", "guide", "инструкц", "как получить")
 INSTAGRAM_START_WORDS = {"start", "старт"}
+# The child MarketCar account has its own call-to-action.  Keep these words
+# separate so changing its campaign never changes the main account's flow.
+MARKETCAR_REQUEST_WORDS = {"авто", "avto", "ауто"}
 RECENT_EVENT_IDS = set()
 RECENT_EVENT_LOCK = threading.Lock()
 
@@ -355,6 +358,14 @@ def telegram_bot_link_for_account(account: dict):
     return TELEGRAM_BOT_LINK
 
 
+def is_marketcar_account(account: dict) -> bool:
+    """Return whether an Instagram account is the MarketCar child account."""
+    username = str(account.get("username") or "").lstrip("@").lower()
+    profile_url = str(account.get("profile_url") or "").lower()
+    marketcar = MARKETCAR_INSTAGRAM_USERNAME.lstrip("@").lower()
+    return username == marketcar or f"instagram.com/{marketcar}" in profile_url
+
+
 def check_instagram_subscription(account: dict, recipient_id: str):
     """Release the Telegram link only after Meta confirms the follow status."""
     try:
@@ -421,9 +432,11 @@ def remember_event(event_id: str) -> bool:
     return True
 
 
-def is_instagram_guide_request(text: str) -> bool:
-    """Recognize common Russian and English requests for the guide."""
-    normalized = " ".join(text.strip().lower().split())
+def is_instagram_guide_request(account: dict, text: str) -> bool:
+    """Recognize the campaign keyword for the account that received it."""
+    normalized = " ".join(text.strip().lower().split()).strip(".,!?:;…")
+    if is_marketcar_account(account):
+        return normalized in MARKETCAR_REQUEST_WORDS
     return normalized in INSTAGRAM_START_WORDS or any(
         marker in normalized for marker in INSTAGRAM_GUIDE_MARKERS
     )
@@ -447,7 +460,7 @@ def handle_instagram_message(account: dict, event: dict):
 
     if payload == "confirm_subscription":
         check_instagram_subscription(account, sender)
-    elif is_instagram_guide_request(text):
+    elif is_instagram_guide_request(account, text):
         instagram_subscription_prompt(account, sender)
     # Any other Direct message belongs to the account owner. Stay quiet so a
     # normal manual conversation is never interrupted by the automation.
@@ -466,7 +479,7 @@ def handle_instagram_comment(account: dict, change: dict):
         # continue the resulting Direct conversation manually.
         reply_to_instagram_comment(account, comment_id, "Проверьте Direct ✉️")
         return
-    if not is_instagram_guide_request(text):
+    if not is_instagram_guide_request(account, text):
         return
 
     # A public reply makes the next action clear. Meta permits a single private
