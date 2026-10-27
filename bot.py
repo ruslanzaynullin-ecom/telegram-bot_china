@@ -23,7 +23,6 @@ from pathlib import Path
 
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-VIDEO_PATH = Path(os.environ.get("GUIDE_VIDEO_PATH", "assets/guide-video.mp4"))
 PDF_PATH = Path(os.environ.get("GUIDE_PDF_PATH", "assets/guide.pdf"))
 DATA_PATH = Path(os.environ.get("DATA_PATH", "data/bot.sqlite3"))
 API_ROOT = f"https://api.telegram.org/bot{TOKEN}"
@@ -78,7 +77,7 @@ WELCOME = (
     "Привет! 👋\n\n"
     "Здесь вы получите бесплатный пошаговый гайд: «Как найти фабрики и их "
     "продукцию с Кантонской выставки в Китае 2026 года».\n\n"
-    "Нажмите кнопку — и я пришлю видео и PDF-инструкцию."
+    "Нажмите кнопку — и я пришлю PDF-инструкцию."
 )
 
 # Markers are deliberately broad: people often write a full request rather
@@ -949,8 +948,7 @@ def send_welcome(chat_id):
 
 
 def send_guide(connection, chat_id):
-    missing = [str(path) for path in (VIDEO_PATH, PDF_PATH) if not path.is_file()]
-    if missing:
+    if not PDF_PATH.is_file():
         api(
             "sendMessage",
             {
@@ -958,11 +956,10 @@ def send_guide(connection, chat_id):
                 "text": "Материалы ещё загружаются. Пожалуйста, попробуйте немного позже.",
             },
         )
-        print("Missing guide files:", ", ".join(missing), file=sys.stderr)
+        print("Missing guide file:", PDF_PATH, file=sys.stderr)
         return
-    api("sendMessage", {"chat_id": chat_id, "text": "Готово — отправляю материалы 👇"})
-    api("sendVideo", {"chat_id": chat_id, "caption": "Видео-инструкция"}, {"video": VIDEO_PATH})
-    api("sendDocument", {"chat_id": chat_id, "caption": "PDF-инструкция"}, {"document": PDF_PATH})
+    api("sendMessage", {"chat_id": chat_id, "text": "Готово — отправляю инструкцию 👇"})
+    api("sendDocument", {"chat_id": chat_id, "caption": "Инструкция"}, {"document": PDF_PATH})
     connection.execute(
         "UPDATE users SET guide_sent_at = CURRENT_TIMESTAMP WHERE chat_id = ?", (chat_id,)
     )

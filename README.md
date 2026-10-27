@@ -6,14 +6,14 @@ Free delivery bot for `@cantonfair_china_bot` (display name: «Автобот_п
 
 - accepts the Instagram tracking link `https://t.me/cantonfair_china_bot?start=instagram`;
 - shows a **Получить гайд** button;
-- sends the video and PDF after the button is pressed;
+- sends the PDF after the button is pressed;
 - requires subscription to `@r_zaynullin` before the guide is available;
 - shows a persistent **▶️ Запустить** button in the chat;
 - stores only the chat ID, traffic source, first start, and guide-delivery timestamp in a local SQLite file.
 
 ## Local launch
 
-1. Create `assets/` and put the materials there as `guide-video.mp4` and `guide.pdf`.
+1. Create `assets/` and put the PDF material there as `guide.pdf`.
 2. Copy `.env.example` to `.env` and put the BotFather token in `TELEGRAM_BOT_TOKEN`.
 3. Load environment variables and run the bot:
 
