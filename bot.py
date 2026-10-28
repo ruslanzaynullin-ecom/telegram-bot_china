@@ -23,7 +23,9 @@ from pathlib import Path
 
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+MARKETCAR_TELEGRAM_BOT_TOKEN = os.environ.get("MARKETCAR_TELEGRAM_BOT_TOKEN", "")
 PDF_PATH = Path(os.environ.get("GUIDE_PDF_PATH", "assets/guide.pdf"))
+MARKETCAR_PDF_PATH = Path(os.environ.get("MARKETCAR_PDF_PATH", "assets/guide.pdf"))
 DATA_PATH = Path(os.environ.get("DATA_PATH", "data/bot.sqlite3"))
 API_ROOT = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -65,7 +67,7 @@ REQUIRED_TELEGRAM_CHANNEL_LINK = os.environ.get(
 # Instagram account.
 MARKETCAR_INSTAGRAM_USERNAME = os.environ.get("MARKETCAR_INSTAGRAM_USERNAME", "marketcar.pro")
 MARKETCAR_TELEGRAM_BOT_LINK = os.environ.get(
-    "MARKETCAR_TELEGRAM_BOT_LINK", "https://t.me/cantonfair_china_bot?start=marketcar"
+    "MARKETCAR_TELEGRAM_BOT_LINK", "https://t.me/marketcarpro2026_bot"
 )
 MARKETCAR_TELEGRAM_CHANNEL = os.environ.get("MARKETCAR_TELEGRAM_CHANNEL", "@marketcar_pro")
 MARKETCAR_TELEGRAM_CHANNEL_LINK = os.environ.get(
@@ -79,6 +81,11 @@ WELCOME = (
     "продукцию с Кантонской выставки в Китае 2026 года».\n\n"
     "Нажмите кнопку — и я пришлю PDF-инструкцию."
 )
+MARKETCAR_WELCOME = (
+    "Привет! 👋\n\n"
+    "Здесь вы получите каталог автомобилей из Китая.\n\n"
+    "Нажмите кнопку — и я пришлю PDF-каталог."
+)
 
 # Markers are deliberately broad: people often write a full request rather
 # than a single trigger word below a post or in Direct.
@@ -91,9 +98,11 @@ RECENT_EVENT_IDS = set()
 RECENT_EVENT_LOCK = threading.Lock()
 
 
-def api(method: str, payload=None, files=None):
+def api(method: str, payload=None, files=None, token=TOKEN):
     """Call Telegram Bot API, supporting both JSON and multipart uploads."""
-    url = f"{API_ROOT}/{method}"
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured.")
+    url = f"https://api.telegram.org/bot{token}/{method}"
     payload = payload or {}
     try:
         if files:
@@ -108,10 +117,13 @@ def api(method: str, payload=None, files=None):
 
             for name, value in payload.items():
                 part(name, value)
-            for field, path in files.items():
+            for field, file_spec in files.items():
+                path, upload_name = (
+                    file_spec if isinstance(file_spec, tuple) else (file_spec, file_spec.name)
+                )
                 body.extend(f"--{boundary}\r\n".encode())
                 body.extend(
-                    f'Content-Disposition: form-data; name="{field}"; filename="{path.name}"\r\n'.encode()
+                    f'Content-Disposition: form-data; name="{field}"; filename="{upload_name}"\r\n'.encode()
                 )
                 body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
                 body.extend(path.read_bytes())
@@ -829,6 +841,14 @@ def init_db():
         )"""
     )
     connection.execute(
+        """CREATE TABLE IF NOT EXISTS marketcar_users (
+            chat_id INTEGER PRIMARY KEY,
+            source TEXT,
+            first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            guide_sent_at TEXT
+        )"""
+    )
+    connection.execute(
         """CREATE TABLE IF NOT EXISTS completed_instagram_users (
             user_id TEXT PRIMARY KEY,
             completed_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -897,39 +917,47 @@ def mark_instagram_user_complete(account_id, user_id):
         connection.close()
 
 
-def save_user(connection, chat_id, source):
+def user_table(bot_key):
+    """Use separate completion history for the separate MarketCar bot."""
+    return "marketcar_users" if bot_key == "marketcar" else "users"
+
+
+def save_user(connection, chat_id, source, bot_key="main"):
     source = source or "direct"
+    table = user_table(bot_key)
     connection.execute(
-        "INSERT OR IGNORE INTO users (chat_id, source) VALUES (?, ?)", (chat_id, source)
+        f"INSERT OR IGNORE INTO {table} (chat_id, source) VALUES (?, ?)", (chat_id, source)
     )
     # A deep link is an explicit choice of campaign. It must override a
     # previous generic start so MarketCar users are checked against its own
     # Telegram group.
     if source != "direct":
-        connection.execute("UPDATE users SET source = ? WHERE chat_id = ?", (source, chat_id))
+        connection.execute(f"UPDATE {table} SET source = ? WHERE chat_id = ?", (source, chat_id))
     connection.commit()
 
 
-def telegram_user_is_complete(connection, chat_id):
+def telegram_user_is_complete(connection, chat_id, bot_key="main"):
+    table = user_table(bot_key)
     row = connection.execute(
-        "SELECT guide_sent_at FROM users WHERE chat_id = ?", (chat_id,)
+        f"SELECT guide_sent_at FROM {table} WHERE chat_id = ?", (chat_id,)
     ).fetchone()
     return bool(row and row[0])
 
 
-def start_menu(chat_id):
+def start_menu(chat_id, token, bot_key):
     """Show a persistent, simple entry button in the Telegram chat."""
+    material = "каталог автомобилей" if bot_key == "marketcar" else "гайд"
     api(
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": "Нажмите «▶️ Запустить», чтобы получить гайд.",
+            "text": f"Нажмите «▶️ Запустить», чтобы получить {material}.",
             "reply_markup": {
                 "keyboard": [[{"text": "▶️ Запустить"}]],
                 "resize_keyboard": True,
                 "is_persistent": True,
             },
-        },
+        }, token=token,
     )
 
 
@@ -940,15 +968,16 @@ def required_channel_for_source(source):
     return REQUIRED_TELEGRAM_CHANNEL, REQUIRED_TELEGRAM_CHANNEL_LINK
 
 
-def required_channel_for_user(connection, chat_id):
-    row = connection.execute("SELECT source FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+def required_channel_for_user(connection, chat_id, bot_key="main"):
+    table = user_table(bot_key)
+    row = connection.execute(f"SELECT source FROM {table} WHERE chat_id = ?", (chat_id,)).fetchone()
     return required_channel_for_source(row[0] if row else "direct")
 
 
-def is_channel_member(chat_id, channel):
+def is_channel_member(chat_id, channel, token):
     """Check subscription. The bot must be an admin of the required channel."""
     try:
-        member = api("getChatMember", {"chat_id": channel, "user_id": chat_id})
+        member = api("getChatMember", {"chat_id": channel, "user_id": chat_id}, token=token)
     except RuntimeError as error:
         print(f"Subscription check failed: {error}", file=sys.stderr)
         return False
@@ -958,112 +987,136 @@ def is_channel_member(chat_id, channel):
     )
 
 
-def subscription_prompt(chat_id, channel, channel_link):
+def subscription_prompt(chat_id, channel, channel_link, token, bot_key):
     keyboard = {
         "inline_keyboard": [
             [{"text": "Подписаться на канал", "url": channel_link}],
             [{"text": "Проверить подписку", "callback_data": "check_subscription"}],
         ]
     }
+    material = "каталог автомобилей" if bot_key == "marketcar" else "гайд"
     api(
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": f"Чтобы получить гайд, подпишитесь на канал {channel}.",
+            "text": f"Чтобы получить {material}, подпишитесь на канал {channel}.",
             "reply_markup": keyboard,
-        },
+        }, token=token,
     )
 
 
-def send_welcome(chat_id):
-    keyboard = {"inline_keyboard": [[{"text": "Получить гайд", "callback_data": "get_guide"}]]}
-    api("sendMessage", {"chat_id": chat_id, "text": WELCOME, "reply_markup": keyboard})
+def send_welcome(chat_id, token, bot_key):
+    label = "Получить каталог" if bot_key == "marketcar" else "Получить гайд"
+    welcome = MARKETCAR_WELCOME if bot_key == "marketcar" else WELCOME
+    keyboard = {"inline_keyboard": [[{"text": label, "callback_data": "get_guide"}]]}
+    api("sendMessage", {"chat_id": chat_id, "text": welcome, "reply_markup": keyboard}, token=token)
 
 
-def send_guide(connection, chat_id):
-    if not PDF_PATH.is_file():
+def send_guide(connection, chat_id, token, bot_key):
+    path = MARKETCAR_PDF_PATH if bot_key == "marketcar" else PDF_PATH
+    filename = "Каталог_авто.pdf" if bot_key == "marketcar" else path.name
+    caption = "Каталог автомобилей" if bot_key == "marketcar" else "Инструкция"
+    if not path.is_file():
         api(
             "sendMessage",
             {
                 "chat_id": chat_id,
                 "text": "Материалы ещё загружаются. Пожалуйста, попробуйте немного позже.",
-            },
+            }, token=token,
         )
-        print("Missing guide file:", PDF_PATH, file=sys.stderr)
+        print("Missing guide file:", path, file=sys.stderr)
         return
-    api("sendMessage", {"chat_id": chat_id, "text": "Готово — отправляю инструкцию 👇"})
-    api("sendDocument", {"chat_id": chat_id, "caption": "Инструкция"}, {"document": PDF_PATH})
+    text = "Готово — отправляю каталог 👇" if bot_key == "marketcar" else "Готово — отправляю инструкцию 👇"
+    api("sendMessage", {"chat_id": chat_id, "text": text}, token=token)
+    api("sendDocument", {"chat_id": chat_id, "caption": caption}, {"document": (path, filename)}, token=token)
+    table = user_table(bot_key)
     connection.execute(
-        "UPDATE users SET guide_sent_at = CURRENT_TIMESTAMP WHERE chat_id = ?", (chat_id,)
+        f"UPDATE {table} SET guide_sent_at = CURRENT_TIMESTAMP WHERE chat_id = ?", (chat_id,)
     )
     connection.commit()
 
 
-def handle_update(connection, update):
+def handle_update(connection, update, token, bot_key, default_source):
     message = update.get("message")
     callback = update.get("callback_query")
 
     if message:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
-        if telegram_user_is_complete(connection, chat_id):
+        if telegram_user_is_complete(connection, chat_id, bot_key):
             return
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
-            source = parts[1] if len(parts) == 2 else "direct"
-            save_user(connection, chat_id, source)
-            start_menu(chat_id)
+            source = default_source if bot_key == "marketcar" else (parts[1] if len(parts) == 2 else "direct")
+            save_user(connection, chat_id, source, bot_key)
+            start_menu(chat_id, token, bot_key)
         elif text.lower() in {"▶️ запустить", "запустить", "гайд", "получить гайд", "старт"}:
-            save_user(connection, chat_id, "direct")
-            channel, channel_link = required_channel_for_user(connection, chat_id)
-            if is_channel_member(chat_id, channel):
-                send_welcome(chat_id)
+            save_user(connection, chat_id, default_source if bot_key == "marketcar" else "direct", bot_key)
+            channel, channel_link = required_channel_for_user(connection, chat_id, bot_key)
+            if is_channel_member(chat_id, channel, token):
+                send_welcome(chat_id, token, bot_key)
             else:
-                subscription_prompt(chat_id, channel, channel_link)
+                subscription_prompt(chat_id, channel, channel_link, token, bot_key)
         else:
-            start_menu(chat_id)
+            start_menu(chat_id, token, bot_key)
 
     if callback and callback.get("data") in {"check_subscription", "get_guide"}:
         chat_id = callback["message"]["chat"]["id"]
-        if telegram_user_is_complete(connection, chat_id):
-            api("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        if telegram_user_is_complete(connection, chat_id, bot_key):
+            api("answerCallbackQuery", {"callback_query_id": callback["id"]}, token=token)
             return
-        save_user(connection, chat_id, "direct")
-        api("answerCallbackQuery", {"callback_query_id": callback["id"]})
-        channel, channel_link = required_channel_for_user(connection, chat_id)
-        if not is_channel_member(chat_id, channel):
-            subscription_prompt(chat_id, channel, channel_link)
+        save_user(connection, chat_id, default_source if bot_key == "marketcar" else "direct", bot_key)
+        api("answerCallbackQuery", {"callback_query_id": callback["id"]}, token=token)
+        channel, channel_link = required_channel_for_user(connection, chat_id, bot_key)
+        if not is_channel_member(chat_id, channel, token):
+            subscription_prompt(chat_id, channel, channel_link, token, bot_key)
         elif callback["data"] == "check_subscription":
-            send_welcome(chat_id)
+            send_welcome(chat_id, token, bot_key)
         else:
-            send_guide(connection, chat_id)
+            send_guide(connection, chat_id, token, bot_key)
 
 
-def main():
-    if not TOKEN:
-        raise SystemExit("Set TELEGRAM_BOT_TOKEN before starting the bot.")
+def run_telegram_bot(token, bot_key, default_source):
+    """Poll one Telegram bot. MarketCar runs independently from the old bot."""
     connection = init_db()
-    start_webhook_server()
-    if not configured_instagram_accounts():
-        print("Instagram replies are disabled until Instagram variables are configured.")
-    if not (INSTAGRAM_APP_SECRET and META_VERIFY_TOKEN):
-        print("Meta webhook verification is disabled until its secrets are configured.")
     offset = None
-    print("Bot is running. Press Ctrl+C to stop.")
+    print(f"Telegram bot {bot_key} is running.")
     while True:
         try:
             payload = {"timeout": 30, "allowed_updates": ["message", "callback_query"]}
             if offset is not None:
                 payload["offset"] = offset
-            for update in api("getUpdates", payload):
+            for update in api("getUpdates", payload, token=token):
                 offset = update["update_id"] + 1
-                handle_update(connection, update)
+                handle_update(connection, update, token, bot_key, default_source)
         except KeyboardInterrupt:
             break
         except Exception as error:  # Keep the bot alive during temporary API errors.
-            print(f"Error: {error}", file=sys.stderr)
+            print(f"Telegram bot {bot_key} error: {error}", file=sys.stderr)
             time.sleep(5)
     connection.close()
+
+
+def main():
+    if not TOKEN:
+        raise SystemExit("Set TELEGRAM_BOT_TOKEN before starting the bot.")
+    init_db().close()
+    start_webhook_server()
+    if not configured_instagram_accounts():
+        print("Instagram replies are disabled until Instagram variables are configured.")
+    if not (INSTAGRAM_APP_SECRET and META_VERIFY_TOKEN):
+        print("Meta webhook verification is disabled until its secrets are configured.")
+    threading.Thread(target=run_telegram_bot, args=(TOKEN, "main", "direct"), daemon=True).start()
+    if MARKETCAR_TELEGRAM_BOT_TOKEN:
+        threading.Thread(
+            target=run_telegram_bot,
+            args=(MARKETCAR_TELEGRAM_BOT_TOKEN, "marketcar", "marketcar"),
+            daemon=True,
+        ).start()
+    else:
+        print("MarketCar Telegram bot is disabled until its token is configured.")
+    while True:
+        time.sleep(3600)
 
 
 if __name__ == "__main__":
