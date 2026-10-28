@@ -597,6 +597,21 @@ def oauth_request_json(url: str, form: dict | None = None):
         raise RuntimeError("Instagram authorization service is unavailable.") from error
 
 
+def subscribe_connected_account_to_webhooks(account_id: str, access_token: str):
+    """Subscribe an Instagram Login account to this app's message events.
+
+    Webhook fields are configured once in the Meta dashboard, but every
+    professional account connected through Instagram Login must also be
+    subscribed to this app.  Without this, a second account can authorize
+    successfully yet its Direct messages never reach our callback URL.
+    """
+    instagram_api(
+        {"id": account_id, "token": access_token, "profile_url": ""},
+        f"{account_id}/subscribed_apps",
+        {"subscribed_fields": ["messages", "comments"]},
+    )
+
+
 def connect_instagram_account(code: str):
     """Exchange an OAuth code and securely save the connected account."""
     if not (INSTAGRAM_OAUTH_CLIENT_ID and INSTAGRAM_OAUTH_CLIENT_SECRET):
@@ -630,6 +645,7 @@ def connect_instagram_account(code: str):
     if not account_id:
         raise RuntimeError("Instagram did not return the professional account ID.")
     profile_url = f"https://www.instagram.com/{username}/" if username else ""
+    subscribe_connected_account_to_webhooks(account_id, access_token)
     connection = sqlite3.connect(DATA_PATH)
     try:
         connection.execute(
