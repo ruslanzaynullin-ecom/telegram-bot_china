@@ -478,11 +478,11 @@ def handle_instagram_message(account: dict, event: dict):
 
     completed = instagram_user_is_complete(account["id"], sender)
     # MarketCar is intentionally repeatable: a person can request the bot
-    # link again later by sending its campaign word.  They already passed the
-    # Instagram-follow check during the first handoff, so send the link
-    # directly instead of restarting the subscription flow.
+    # link again later by sending its campaign word.  Re-check the Instagram
+    # follow on every request; a previous successful handoff must never bypass
+    # the current subscription requirement.
     if is_marketcar_account(account) and completed and is_instagram_guide_request(account, text):
-        return send_telegram_link(account, sender)
+        return check_instagram_subscription(account, sender)
     # The original guide account stays quiet after handoff, leaving later
     # conversation entirely to the account owner.
     if completed:
