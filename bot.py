@@ -468,16 +468,24 @@ def handle_instagram_message(account: dict, event: dict):
     sender = (event.get("sender") or {}).get("id")
     if not sender:
         return
-    # Once the guide is delivered, this conversation belongs to the person
-    # managing the account. The automation must stay silent.
-    if instagram_user_is_complete(account["id"], sender):
-        return
     message = event.get("message") or {}
     postback = event.get("postback") or {}
     text = (message.get("text") or "").strip().lower()
     payload = (postback.get("payload") or "").strip()
     event_id = message.get("mid") or postback.get("mid") or f"{sender}:{text}:{payload}"
     if not remember_event(event_id):
+        return
+
+    completed = instagram_user_is_complete(account["id"], sender)
+    # MarketCar is intentionally repeatable: a person can request the bot
+    # link again later by sending its campaign word.  They already passed the
+    # Instagram-follow check during the first handoff, so send the link
+    # directly instead of restarting the subscription flow.
+    if is_marketcar_account(account) and completed and is_instagram_guide_request(account, text):
+        return send_telegram_link(account, sender)
+    # The original guide account stays quiet after handoff, leaving later
+    # conversation entirely to the account owner.
+    if completed:
         return
 
     if payload == "confirm_subscription":
