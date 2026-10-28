@@ -481,7 +481,9 @@ def handle_instagram_message(account: dict, event: dict):
     # link again later by sending its campaign word.  Re-check the Instagram
     # follow on every request; a previous successful handoff must never bypass
     # the current subscription requirement.
-    if is_marketcar_account(account) and completed and is_instagram_guide_request(account, text):
+    if is_marketcar_account(account) and completed and (
+        is_instagram_guide_request(account, text) or payload == "confirm_subscription"
+    ):
         return check_instagram_subscription(account, sender)
     # The original guide account stays quiet after handoff, leaving later
     # conversation entirely to the account owner.
