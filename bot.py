@@ -485,10 +485,16 @@ def handle_instagram_message(account: dict, event: dict):
         is_instagram_guide_request(account, text) or payload == "confirm_subscription"
     ):
         return check_instagram_subscription(account, sender)
-    # The original guide account stays quiet after handoff, leaving later
-    # conversation entirely to the account owner.
-    if completed:
+    # The original guide account also remains quiet after handoff, except when
+    # the person explicitly asks for the guide again or taps the subscription
+    # check button.  Ordinary Direct messages stay available for the owner.
+    if completed and not (
+        is_instagram_guide_request(account, text) or payload == "confirm_subscription"
+    ):
         return
+
+    if completed:
+        return check_instagram_subscription(account, sender)
 
     if payload == "confirm_subscription":
         check_instagram_subscription(account, sender)
@@ -506,10 +512,12 @@ def handle_instagram_comment(account: dict, change: dict):
     if not comment_id or not remember_event(comment_id):
         return
     if commenter_id and instagram_user_is_complete(account["id"], commenter_id):
-        # Keep a polite public response on later comments, but do not restart
-        # the Direct automation or send the guide again. The account owner can
-        # continue the resulting Direct conversation manually.
+        # MarketCar is deliberately repeatable: a new campaign comment should
+        # renew the Direct handoff even when this person received the catalog
+        # before.  Re-check the follow first, then resend the Telegram link.
         reply_to_instagram_comment(account, comment_id, "Проверьте Direct ✉️")
+        if is_marketcar_account(account) and is_instagram_guide_request(account, text):
+            return check_instagram_subscription(account, commenter_id)
         return
     if not is_instagram_guide_request(account, text):
         return
@@ -1053,14 +1061,19 @@ def handle_update(connection, update, token, bot_key, default_source):
     if message:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
-        if telegram_user_is_complete(connection, chat_id, bot_key):
+        completed = telegram_user_is_complete(connection, chat_id, bot_key)
+        request_words = {"▶️ запустить", "запустить", "гайд", "получить гайд", "старт"}
+        is_explicit_request = text.startswith("/start") or text.lower() in request_words
+        # The original bot may be started again or explicitly asked for the
+        # guide again.  Other messages from a completed user remain silent.
+        if completed and (bot_key != "main" or not is_explicit_request):
             return
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             source = default_source if bot_key == "marketcar" else (parts[1] if len(parts) == 2 else "direct")
             save_user(connection, chat_id, source, bot_key)
             start_menu(chat_id, token, bot_key)
-        elif text.lower() in {"▶️ запустить", "запустить", "гайд", "получить гайд", "старт"}:
+        elif text.lower() in request_words:
             save_user(connection, chat_id, default_source if bot_key == "marketcar" else "direct", bot_key)
             channel, channel_link = required_channel_for_user(connection, chat_id, bot_key)
             if is_channel_member(chat_id, channel, token):
@@ -1072,7 +1085,9 @@ def handle_update(connection, update, token, bot_key, default_source):
 
     if callback and callback.get("data") in {"check_subscription", "get_guide"}:
         chat_id = callback["message"]["chat"]["id"]
-        if telegram_user_is_complete(connection, chat_id, bot_key):
+        # Allow completed users of the original bot to press its buttons
+        # again after deliberately requesting the guide a second time.
+        if telegram_user_is_complete(connection, chat_id, bot_key) and bot_key != "main":
             api("answerCallbackQuery", {"callback_query_id": callback["id"]}, token=token)
             return
         save_user(connection, chat_id, default_source if bot_key == "marketcar" else "direct", bot_key)
