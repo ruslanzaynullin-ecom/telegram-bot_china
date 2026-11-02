@@ -511,7 +511,7 @@ def handle_instagram_comment(account: dict, change: dict):
     text = (value.get("text") or "").strip().lower()
     if not comment_id or not remember_event(comment_id):
         return
-    if commenter_id and instagram_user_is_complete(account["id"], commenter_id):
+    if is_instagram_guide_request(account, text) and commenter_id and instagram_user_is_complete(account["id"], commenter_id):
         # MarketCar is deliberately repeatable: a new campaign comment should
         # renew the Direct handoff even when this person received the catalog
         # before.  Re-check the follow first, then resend the Telegram link.
