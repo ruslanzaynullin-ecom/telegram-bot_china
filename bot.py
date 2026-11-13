@@ -1084,19 +1084,14 @@ def send_guide(connection, chat_id, token, bot_key):
 
 
 def handle_update(connection, update, token, bot_key, default_source):
+    """Handle Telegram updates and always reopen the menu on a new message."""
     message = update.get("message")
     callback = update.get("callback_query")
 
     if message:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
-        completed = telegram_user_is_complete(connection, chat_id, bot_key)
         request_words = {"▶️ запустить", "запустить", "гайд", "получить гайд", "старт"}
-        is_explicit_request = text.startswith("/start") or text.lower() in request_words
-        # The original bot may be started again or explicitly asked for the
-        # guide again.  Other messages from a completed user remain silent.
-        if completed and (bot_key != "main" or not is_explicit_request):
-            return
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
             source = default_source if bot_key == "marketcar" else (parts[1] if len(parts) == 2 else "direct")
@@ -1110,15 +1105,12 @@ def handle_update(connection, update, token, bot_key, default_source):
             else:
                 subscription_prompt(chat_id, channel, channel_link, token, bot_key)
         else:
+            # Even after the files were sent, show the persistent entry button
+            # again for every ordinary message from this user.
             start_menu(chat_id, token, bot_key)
 
     if callback and callback.get("data") in {"check_subscription", "get_guide"}:
         chat_id = callback["message"]["chat"]["id"]
-        # Allow completed users of the original bot to press its buttons
-        # again after deliberately requesting the guide a second time.
-        if telegram_user_is_complete(connection, chat_id, bot_key) and bot_key != "main":
-            api("answerCallbackQuery", {"callback_query_id": callback["id"]}, token=token)
-            return
         save_user(connection, chat_id, default_source if bot_key == "marketcar" else "direct", bot_key)
         api("answerCallbackQuery", {"callback_query_id": callback["id"]}, token=token)
         channel, channel_link = required_channel_for_user(connection, chat_id, bot_key)
@@ -1128,7 +1120,6 @@ def handle_update(connection, update, token, bot_key, default_source):
             send_welcome(chat_id, token, bot_key)
         else:
             send_guide(connection, chat_id, token, bot_key)
-
 
 def run_telegram_bot(token, bot_key, default_source):
     """Poll one Telegram bot. MarketCar runs independently from the old bot."""
