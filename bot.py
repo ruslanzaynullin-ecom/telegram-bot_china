@@ -1121,24 +1121,50 @@ def handle_update(connection, update, token, bot_key, default_source):
         else:
             send_guide(connection, chat_id, token, bot_key)
 
+def get_telegram_updates(token, offset):
+    """Read updates with retries for short network interruptions.
+
+    Railway-to-Telegram connections can occasionally be reset while a long
+    poll is open. Retrying the read here avoids treating that normal,
+    temporary condition as an application error.
+    """
+    payload = {"timeout": 30, "allowed_updates": ["message", "callback_query"]}
+    if offset is not None:
+        payload["offset"] = offset
+    last_error = None
+    for attempt in range(3):
+        try:
+            return api("getUpdates", payload, token=token)
+        except RuntimeError as error:
+            last_error = error
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    raise last_error
+
+
 def run_telegram_bot(token, bot_key, default_source):
     """Poll one Telegram bot. MarketCar runs independently from the old bot."""
     connection = init_db()
     offset = None
+    retry_delay = 5
     print(f"Telegram bot {bot_key} is running.")
     while True:
         try:
-            payload = {"timeout": 30, "allowed_updates": ["message", "callback_query"]}
-            if offset is not None:
-                payload["offset"] = offset
-            for update in api("getUpdates", payload, token=token):
+            for update in get_telegram_updates(token, offset):
                 offset = update["update_id"] + 1
                 handle_update(connection, update, token, bot_key, default_source)
+            retry_delay = 5
         except KeyboardInterrupt:
             break
         except Exception as error:  # Keep the bot alive during temporary API errors.
-            print(f"Telegram bot {bot_key} error: {error}", file=sys.stderr)
-            time.sleep(5)
+            # This is intentionally standard output: Railway should not flag a
+            # transient transport retry as a red application failure.
+            print(
+                f"Telegram bot {bot_key}: temporary Telegram connection problem; "
+                f"retrying in {retry_delay}s ({error})"
+            )
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
     connection.close()
 
 
