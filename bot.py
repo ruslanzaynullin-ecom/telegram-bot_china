@@ -26,6 +26,11 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 MARKETCAR_TELEGRAM_BOT_TOKEN = os.environ.get("MARKETCAR_TELEGRAM_BOT_TOKEN", "")
 PDF_PATH = Path(os.environ.get("GUIDE_PDF_PATH", "assets/guide.pdf"))
 MARKETCAR_PDF_PATH = Path(os.environ.get("MARKETCAR_PDF_PATH", "assets/guide.pdf"))
+MARKETCAR_CATALOGS = (
+    (Path("assets/Топ_кроссоверов_marketcar.pdf"), "Топ_кроссоверов_из_Китая.pdf", "Топ кроссоверов из Китая"),
+    (Path("assets/Топ_седанов_и_хэтчбеков_marketcar.pdf"), "Топ_седанов_и_хэтчбеков.pdf", "Топ седанов и хэтчбеков из Китая"),
+    (Path("assets/Топ_гибридов_marketcar.pdf"), "Топ_гибридов.pdf", "Топ гибридов из Китая"),
+)
 DATA_PATH = Path(os.environ.get("DATA_PATH", "data/bot.sqlite3"))
 API_ROOT = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -1031,6 +1036,30 @@ def send_welcome(chat_id, token, bot_key):
 
 
 def send_guide(connection, chat_id, token, bot_key):
+    if bot_key == "marketcar":
+        missing = [filename for path, filename, _ in MARKETCAR_CATALOGS if not path.is_file()]
+        if missing:
+            api(
+                "sendMessage",
+                {"chat_id": chat_id, "text": "Каталоги временно недоступны. Попробуйте позже."},
+                token=token,
+            )
+            return
+        api("sendMessage", {"chat_id": chat_id, "text": "Готово — отправляю три каталога 👇"}, token=token)
+        for path, filename, caption in MARKETCAR_CATALOGS:
+            api(
+                "sendDocument",
+                {"chat_id": chat_id, "caption": caption},
+                {"document": (path, filename)},
+                token=token,
+            )
+        table = user_table(bot_key)
+        connection.execute(
+            f"UPDATE {table} SET guide_sent_at = CURRENT_TIMESTAMP WHERE chat_id = ?", (chat_id,)
+        )
+        connection.commit()
+        return
+
     path = MARKETCAR_PDF_PATH if bot_key == "marketcar" else PDF_PATH
     filename = "Каталог_авто.pdf" if bot_key == "marketcar" else path.name
     caption = "Каталог автомобилей" if bot_key == "marketcar" else "Инструкция"
