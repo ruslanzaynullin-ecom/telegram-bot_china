@@ -337,10 +337,7 @@ def subscription_buttons(account: dict):
 
 
 def instagram_subscription_prompt(account: dict, recipient_id: str):
-    text = (
-        "Чтобы получить гайд, подпишитесь на наш Instagram. "
-        "Затем вернитесь сюда и нажмите «Проверить подписку»."
-    )
+    text = ("Чтобы получить КАТАЛОГ с большим выбором автомобилей 🩶🚙 подпишитесь пож-та на наш Instagram.\nЗатем вернитесь сюда и нажмите «Проверить подписку»." if is_marketcar_account(account) else "Чтобы получить гайд, подпишитесь на наш Instagram. Затем вернитесь сюда и нажмите «Проверить подписку».")
     try:
         return send_instagram_buttons(account, {"id": str(recipient_id)}, text, subscription_buttons(account))
     except RuntimeError as error:
