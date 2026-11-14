@@ -369,7 +369,7 @@ def send_telegram_link(account: dict, recipient_id: str):
     result = send_instagram_text(
         account,
         recipient_id,
-        f"Спасибо! Вот ссылка на Telegram-бота с гайдом:\n{telegram_link}",
+        f"Спасибо, вот ссылка на наш эксклюзивный КАТАЛОГ по очень выгодным автомобилям:\n{telegram_link}",
     )
     mark_instagram_user_complete(account["id"], recipient_id)
     return result
