@@ -531,7 +531,7 @@ def handle_instagram_comment(account: dict, change: dict):
         private_reply_to_instagram_comment(
             account,
             comment_id,
-            "("Чтобы получить КАТАЛОГ с большим выбором автомобилей 🩶🚙 подпишитесь пож-та на наш Instagram.\nЗатем вернитесь сюда и нажмите «Проверить подписку»." if is_marketcar_account(account) else "Чтобы получить гайд, подпишитесь на наш Instagram и затем нажмите «Проверить подписку».")",
+            ("Чтобы получить КАТАЛОГ с большим выбором автомобилей 🩶🚙 подпишитесь пож-та на наш Instagram.\nЗатем вернитесь сюда и нажмите «Проверить подписку»." if is_marketcar_account(account) else "Чтобы получить гайд, подпишитесь на наш Instagram и затем нажмите «Проверить подписку»."),
         )
     except RuntimeError as error:
         # Keep the public comment reply even if the private reply cannot be
